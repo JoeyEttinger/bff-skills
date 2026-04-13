@@ -35,6 +35,13 @@ Direct integration with Tenero API at `https://api.tenero.io`:
 - Endpoint pattern: `/v1/{chain}/{resource}`
 - Real-time market data with sub-minute freshness
 
+## Safety notes
+
+- **Read-only** — this skill never writes to chain, never submits transactions, and never moves funds.
+- No wallet signing is required. `STACKS_ADDRESS` is optional (used only for `wallet-holdings` and `wallet-trades` if `--address` is omitted).
+- All data is fetched from the public Tenero API (`api.tenero.io`) — no API key required. Data is market intelligence only.
+- Do not use raw market data as the sole basis for large capital moves. Tenero data is descriptive, not predictive.
+
 ## Commands
 
 ### `doctor`
