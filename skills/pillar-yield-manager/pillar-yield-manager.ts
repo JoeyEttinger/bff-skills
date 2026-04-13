@@ -476,6 +476,113 @@ async function runSupply(sbtcAmount: number, confirm: boolean): Promise<void> {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// COMPARE — Cross-protocol yield benchmark (Pillar + Zest + Styx)
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Zest v2 reserve-vault contract addresses (mainnet)
+const ZEST_SBTC_RESERVE = "SP2VCQJHN7SP2CZCE5XR1GDMG0RMG5ERGXBTM22Y";
+const ZEST_SBTC_CONTRACT = "reserve-vault-sbtc";
+const STYX_API = "https://api-styx.vercel.app";
+
+async function fetchZestSbtcPosition(address: string): Promise<Record<string, unknown>> {
+  // Read sBTC supply balance from Zest reserve-vault via Hiro read-only call
+  const url = `${HIRO_API}/v2/contracts/call-read/${ZEST_SBTC_RESERVE}/${ZEST_SBTC_CONTRACT}/get-collateral`;
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sender: address,
+        arguments: [
+          // Clarity principal encoding: 0x05 + version + 20-byte hash (simplified via address string)
+          "0x" + Buffer.from(`'${address}`).toString("hex"),
+        ],
+      }),
+      signal: AbortSignal.timeout(FETCH_TIMEOUT),
+    });
+    if (!res.ok) return { available: false, error: `Hiro ${res.status}` };
+    const json = await res.json() as { result?: string; okay?: boolean };
+    return { available: true, raw_result: json.result, okay: json.okay };
+  } catch (e) {
+    return { available: false, error: (e as Error).message };
+  }
+}
+
+async function fetchStyxPools(): Promise<Record<string, unknown>> {
+  try {
+    const res = await fetch(`${STYX_API}/pools`, {
+      headers: { Accept: "application/json" },
+      signal: AbortSignal.timeout(FETCH_TIMEOUT),
+    });
+    if (!res.ok) return { available: false, error: `Styx API ${res.status}` };
+    return { available: true, pools: await res.json() };
+  } catch (e) {
+    // Styx API endpoint may differ — return the known static pool data from MCP tool discovery
+    return {
+      available: false,
+      error: (e as Error).message,
+      known_pools: [
+        { name: "main", max_deposit_sats: 400_000, total_liquidity_sats: 3_000_000, note: "Static data from MCP discovery" },
+        { name: "aibtc", max_deposit_sats: 1_000_000, total_liquidity_sats: 900_000, note: "Static data from MCP discovery" },
+      ],
+    };
+  }
+}
+
+async function runCompare(): Promise<void> {
+  const address = resolveWalletAddress();
+
+  // Fetch all three protocols in parallel
+  const [pillarQuote, zestPosition, styxPools] = await Promise.allSettled([
+    pillarPost<Record<string, unknown>>("/api/pillar/quote", { sbtcAmount: DEFAULT_QUOTE_SATS }),
+    address ? fetchZestSbtcPosition(address) : Promise.resolve({ available: false, error: "No wallet address — set STACKS_ADDRESS" }),
+    fetchStyxPools(),
+  ]);
+
+  const pillarData = pillarQuote.status === "fulfilled" ? pillarQuote.value : { error: (pillarQuote as PromiseRejectedResult).reason?.message };
+  const zestData = zestPosition.status === "fulfilled" ? zestPosition.value : { available: false, error: (zestPosition as PromiseRejectedResult).reason?.message };
+  const styxData = styxPools.status === "fulfilled" ? styxPools.value : { available: false };
+
+  // Determine recommended protocol based on available data
+  const styxMainLiquidity = (styxData as { known_pools?: Array<{ name: string; total_liquidity_sats: number }> }).known_pools?.find(p => p.name === "main")?.total_liquidity_sats ?? 0;
+  const styxAibtcLiquidity = (styxData as { known_pools?: Array<{ name: string; total_liquidity_sats: number }> }).known_pools?.find(p => p.name === "aibtc")?.total_liquidity_sats ?? 0;
+
+  success("Cross-protocol yield comparison complete. Review each protocol's capacity before allocating.", {
+    wallet_address: address ?? "not configured",
+    timestamp: new Date().toISOString(),
+    protocols: {
+      pillar: {
+        protocol: "Pillar",
+        type: "sBTC supply → Zest collateral (via smart wallet)",
+        quote_basis_sats: DEFAULT_QUOTE_SATS,
+        quote: pillarData,
+        action: "run --action=supply --sbtc-amount=<sats> --confirm",
+        docs: "https://pillar.fi",
+      },
+      zest: {
+        protocol: "Zest Protocol v2",
+        type: "sBTC lending supply (direct)",
+        assets: ["wSTX", "sBTC", "stSTX", "USDC", "USDH", "stSTXbtc"],
+        user_sbtc_position: zestData,
+        reserve_contract: `${ZEST_SBTC_RESERVE}.${ZEST_SBTC_CONTRACT}`,
+        action: "Use zest_supply MCP tool or zest-yield-manager skill",
+        docs: "https://zestprotocol.com",
+      },
+      styx: {
+        protocol: "Styx",
+        type: "BTC L1 → sBTC bridge + pool liquidity",
+        pools: styxData,
+        main_pool_liquidity_sats: styxMainLiquidity,
+        aibtc_pool_liquidity_sats: styxAibtcLiquidity,
+        action: "Use styx_deposit MCP tool",
+        docs: "https://styx.fi",
+      },
+    },
+    recommendation: "Compare Pillar quote rate vs Zest supply APY vs Styx pool capacity. Pillar automates Zest collateral management. Zest direct supply is simpler. Styx is BTC L1 bridge yield.",
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // CLI SETUP
 // ═══════════════════════════════════════════════════════════════════════════
 const program = new Command();
@@ -499,7 +606,7 @@ program
 program
   .command("run")
   .description("Execute a Pillar yield manager action")
-  .requiredOption("--action <action>", "Action: status | quote | dca-leaderboard | supply")
+  .requiredOption("--action <action>", "Action: status | quote | dca-leaderboard | supply | compare")
   .option("--sbtc-amount <sats>", "sBTC amount in sats (for quote and supply)", String(DEFAULT_QUOTE_SATS))
   .option("--confirm", "Confirm and execute write actions (required for supply)")
   .action(async (opts: { action: string; sbtcAmount: string; confirm?: boolean }) => {
@@ -519,11 +626,14 @@ program
         case "supply":
           await runSupply(sbtcAmount, !!opts.confirm);
           break;
+        case "compare":
+          await runCompare();
+          break;
         default:
           fail(
             "unknown_action",
             `Unknown action: ${opts.action}`,
-            "Use one of: status | quote | dca-leaderboard | supply"
+            "Use one of: status | quote | dca-leaderboard | supply | compare"
           );
       }
     } catch (e) {

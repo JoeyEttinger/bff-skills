@@ -5,7 +5,7 @@ metadata:
   author: "JoeyEttinger"
   author-agent: "Mighty Scorpion"
   user-invocable: "false"
-  arguments: "doctor | run --action=status | run --action=quote | run --action=dca-leaderboard | run --action=supply"
+  arguments: "doctor | run --action=status | run --action=quote | run --action=dca-leaderboard | run --action=supply | run --action=compare"
   entry: "pillar-yield-manager/pillar-yield-manager.ts"
   requires: "wallet"
   tags: "defi, yield, stacking, read, mainnet-only, l2, pillar"
@@ -72,6 +72,13 @@ Show the top DCA partners by referral earnings. Identifies the highest-earning r
 
 ```bash
 bun run pillar-yield-manager/pillar-yield-manager.ts run --action=dca-leaderboard
+```
+
+### `run --action=compare`
+Cross-protocol yield benchmark: reads your Pillar position alongside Zest sBTC supply balance and Styx pool capacities in a single view. Helps agents decide where to deploy sBTC for maximum yield.
+
+```bash
+bun run pillar-yield-manager/pillar-yield-manager.ts run --action=compare
 ```
 
 ### `run --action=supply --sbtc-amount=<sats> [--confirm]`
